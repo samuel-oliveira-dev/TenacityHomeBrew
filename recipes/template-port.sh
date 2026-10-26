@@ -13,6 +13,9 @@ TEMP_DIR="${TMPDIR:-/tmp}/${APP_NAME}-update"
 BACKUP_DIR="$INSTALL_DIR/backups"
 DOWNLOAD_RELEASE="${DOWNLOAD_RELEASE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/download-release.sh}"
 PRESERVE_LIST=("gamedata/saves" "conf/settings.cfg" "media")
+EXTENSION="${EXTENSION-sh}"
+ACTION="${1:-update}"
+IGNORE_ON_INSTALL="${IGNORE_ON_INSTALL-}"
 
 die() {
     printf 'Erro: %s\n' "$*" >&2
@@ -27,6 +30,31 @@ require_commands() {
     [ -x "$DOWNLOAD_RELEASE" ] || die "downloader não encontrado: $DOWNLOAD_RELEASE"
 }
 
+if [ "$ACTION" = "remove" ]; then
+    [ -n "$INSTALL_DIR" ] && [ "$INSTALL_DIR" != "/" ] || die "diretório de instalação inválido"
+    if [ ! -d "$INSTALL_DIR" ]; then
+        printf 'Item não está instalado.\n'
+    else
+        find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 ! -name backups -exec rm -rf -- {} +
+        printf 'Item removido. Backups preservados em %s.\n' "$BACKUP_DIR"
+    fi
+    exit 0
+fi
+
+if [ "$ACTION" = "backups" ]; then
+    if [ ! -d "$BACKUP_DIR" ]; then
+        printf 'Nenhum backup encontrado.\n'
+    else
+        backups_found=0
+        while IFS= read -r backup; do
+            backups_found=1
+            basename "$backup"
+        done < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name '*.zip' -print | sort)
+        [ "$backups_found" -eq 1 ] || printf 'Nenhum backup encontrado.\n'
+    fi
+    exit 0
+fi
+
 latest_release_json=$(mktemp)
 cleanup() {
     rm -rf "$TEMP_DIR" "$latest_release_json"
@@ -38,16 +66,19 @@ mkdir -p "$(dirname "$INSTALL_DIR")"
 release_url="${RELEASE_URL:-https://api.github.com/repos/$REPO/releases/latest}"
 curl -fsSL "$release_url" -o "$latest_release_json" || die "não foi possível consultar a release de $REPO"
 
+if [ -z "$EXTENSION" ]; then die "A extensão da release não foi definida."
+fi
+
 if command -v jq >/dev/null 2>&1; then
     latest_tag=$(jq -r '.tag_name // empty' "$latest_release_json")
-    download_url=$(jq -r '[.assets[]? | select(.browser_download_url | endswith(".zip"))][0].browser_download_url // empty' "$latest_release_json")
+    download_url=$(jq -r --arg extension "$EXTENSION" '[.assets[]? | select(.browser_download_url | endswith($extension))][0].browser_download_url // empty' "$latest_release_json")
 else
     latest_tag=$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$latest_release_json" | head -n 1)
-    download_url=$(sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\.zip\)".*/\1/p' "$latest_release_json" | head -n 1)
+    download_url=$(sed -n "s|.*\"browser_download_url\"[[:space:]]*:[[:space:]]*\"\([^\"]*${EXTENSION}\)\".*|\1|p" "$latest_release_json" | head -n 1)
 fi
 
 [ -n "$latest_tag" ] || die "a API não retornou uma tag de release"
-[ -n "$download_url" ] || die "a release não possui um arquivo .zip"
+[ -n "$download_url" ] || die "a release não possui um arquivo ${EXTENSION}"
 
 current_tag="v0.0.0"
 [ -f "$INSTALL_DIR/version.txt" ] && current_tag=$(sed -n '1p' "$INSTALL_DIR/version.txt")
@@ -69,7 +100,14 @@ if [ -d "$INSTALL_DIR" ] && find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 ! -name 
 fi
 
 mkdir -p "$TEMP_DIR/extracted"
-"$DOWNLOAD_RELEASE" "$download_url" "$TEMP_DIR/extracted" || die "falha ao baixar e extrair a release"
+EXTENSION="$EXTENSION" "$DOWNLOAD_RELEASE" "$download_url" "$TEMP_DIR/extracted" || die "falha ao baixar e extrair a release"
+
+if [ "$ACTION" = "install" ] && [ -n "$IGNORE_ON_INSTALL" ]; then
+    IFS=: read -r -a ignored_paths <<< "$IGNORE_ON_INSTALL"
+    for relative_path in "${ignored_paths[@]}"; do
+        [ -n "$relative_path" ] && rm -rf "$TEMP_DIR/extracted/$relative_path"
+    done
+fi
 
 preserve_dir="$TEMP_DIR/preserved"
 mkdir -p "$preserve_dir"
