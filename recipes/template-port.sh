@@ -12,6 +12,7 @@ REQUIRED_SPACE_MB="${REQUIRED_SPACE_MB:-30}"
 TEMP_DIR="${TMPDIR:-/tmp}/${APP_NAME}-update"
 BACKUP_DIR="$INSTALL_DIR/backups"
 DOWNLOAD_RELEASE="${DOWNLOAD_RELEASE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/download-release.sh}"
+RECIPE_VERSION_FILE="${RECIPE_VERSION_FILE:-$INSTALL_DIR/version.txt}"
 PRESERVE_LIST=("gamedata/saves" "conf/settings.cfg" "media")
 EXTENSION="${EXTENSION-sh}"
 ACTION="${1:-update}"
@@ -81,7 +82,7 @@ fi
 [ -n "$download_url" ] || die "a release não possui um arquivo ${EXTENSION}"
 
 current_tag="v0.0.0"
-[ -f "$INSTALL_DIR/version.txt" ] && current_tag=$(sed -n '1p' "$INSTALL_DIR/version.txt")
+[ -f "$RECIPE_VERSION_FILE" ] && current_tag=$(sed -n '1p' "$RECIPE_VERSION_FILE")
 if [ "$latest_tag" = "$current_tag" ]; then
     printf 'Item já está na versão mais recente (%s).\n' "$current_tag"
     exit 0
@@ -128,5 +129,8 @@ for relative_path in "${PRESERVE_LIST[@]}"; do
     fi
 done
 
-printf '%s\n' "$latest_tag" > "$INSTALL_DIR/version.txt"
+printf '%s\n' "$latest_tag" > "$RECIPE_VERSION_FILE"
+if [ "$RECIPE_VERSION_FILE" != "$INSTALL_DIR/version.txt" ]; then
+    printf '%s\n' "$latest_tag" > "$INSTALL_DIR/version.txt"
+fi
 printf 'Atualizado para a versão %s com sucesso!\n' "$latest_tag"

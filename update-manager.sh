@@ -6,6 +6,18 @@ BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RECIPES_DIR="$BASE_DIR/recipes"
 MANAGER_RELEASE_URL="${MANAGER_RELEASE_URL:-}"
 DOWNLOAD_RELEASE="$BASE_DIR/download-release.sh"
+GPTOKEYB_BIN="${GPTOKEYB:-}"
+
+if [ -z "$GPTOKEYB_BIN" ] && [ -x /opt/inttools/gptokeyb ]; then
+    GPTOKEYB_BIN=/opt/inttools/gptokeyb
+fi
+
+if [ -x "$GPTOKEYB_BIN" ] && [ "${R36S_GPTOKEYB_ACTIVE:-0}" != "1" ]; then
+    export R36S_GPTOKEYB_ACTIVE=1
+    "$GPTOKEYB_BIN" -1 "$(basename "$0")" -hotkey guide -c "$BASE_DIR/r36s-manager.gptk" >/dev/null 2>&1 &
+    GPTOKEYB_PID=$!
+    trap 'kill "$GPTOKEYB_PID" 2>/dev/null || true' EXIT
+fi
 
 log() {
     printf '%s\n' "$*"
@@ -45,10 +57,9 @@ run_recipe() {
 run_recipe_with_progress() {
     local recipe="$1"
     local action="$2"
-    local progress_dir log_file status_file message percent output_status
+    local progress_dir log_file message output_status worker spinner_index spinner_char terminal
     progress_dir="$(mktemp -d)"
     log_file="$progress_dir/output.log"
-    status_file="$progress_dir/status"
     message="Processando"
     case "$action" in
         install) message="Instalando pacote" ;;
@@ -57,21 +68,30 @@ run_recipe_with_progress() {
         backups) message="Consultando backups" ;;
     esac
 
-    (run_recipe "$recipe" "$action" >"$log_file" 2>&1; printf '%s' "$?" >"$status_file") &
-    (
-        percent=5
-        while [ ! -f "$status_file" ]; do
-            printf '%s\n' "$percent"
-            printf 'XXX\n%s\n%s%% - %s\nXXX\n' "$percent" "$percent" "$message"
-            percent=$((percent + 5))
-            [ "$percent" -le 90 ] || percent=90
-            sleep 1
-        done
-        printf '100\n'
-        printf 'XXX\n100\n100%% - Concluído\nXXX\n'
-    ) | whiptail --title "Aguarde" --gauge "$message..." 8 70 0
+    (run_recipe "$recipe" "$action" >"$log_file" 2>&1) &
+    worker=$!
+    spinner_index=0
+    spinner='|/-\\'
+    terminal="/dev/tty"
 
-    output_status="$(sed -n '1p' "$status_file" 2>/dev/null || printf '1')"
+    while kill -0 "$worker" 2>/dev/null; do
+        spinner_char="${spinner:spinner_index:1}"
+        if [ -w "$terminal" ]; then
+            printf '\r[%s] %s...' "$spinner_char" "$message" >"$terminal"
+        fi
+        spinner_index=$(((spinner_index + 1) % 4))
+        sleep 0.2
+    done
+
+    wait "$worker"
+    output_status=$?
+    if [ -w "$terminal" ]; then
+        if [ "$output_status" -eq 0 ]; then
+            printf '\r[OK] %s concluído.\n' "$message" >"$terminal"
+        else
+            printf '\r[ERRO] %s falhou.\n' "$message" >"$terminal"
+        fi
+    fi
     cat "$log_file"
     rm -rf "$progress_dir"
     return "$output_status"
@@ -83,10 +103,32 @@ recipe_value() {
     sed -n -E "s/^[[:space:]]*(export[[:space:]]+)?${variable_name}=([\"']?)([^\"']*)\2[[:space:]]*$/\3/p" "$recipe" | head -n 1
 }
 
+is_auto_update() {
+    grep -q '^# AUTO_UPDATE:[[:space:]]*true' "$1"
+}
+
+recipe_version_file() {
+    local recipe="$1"
+    if is_auto_update "$recipe"; then
+        printf '%s/version.txt' "$BASE_DIR"
+    elif [[ "$recipe" == *.sh.sh ]]; then
+        printf '%s.version' "${recipe%.sh}"
+    else
+        printf '%s.version' "$recipe"
+    fi
+}
+
 current_version() {
-    local install_dir="$1"
-    if [ -f "$install_dir/version.txt" ]; then
-        sed -n '1p' "$install_dir/version.txt"
+    local recipe="$1"
+    local version_file version
+    version_file="$(recipe_version_file "$recipe")"
+    if [ -f "$version_file" ]; then
+        version="$(sed -n '1p' "$version_file")"
+        if [ -n "$version" ] && [ "$version" != "v0.0.0" ]; then
+            printf '%s' "$version"
+        else
+            printf 'não instalado'
+        fi
     else
         printf 'não instalado'
     fi
@@ -95,11 +137,16 @@ current_version() {
 latest_version() {
     local recipe="$1"
     local repo release_url metadata_file latest_tag
-    repo="$(recipe_value "$recipe" REPO)"
-    [ -n "$repo" ] || return 0
+    if is_auto_update "$recipe"; then
+        release_url="${MANAGER_RELEASE_URL:-}"
+        [ -n "$release_url" ] || return 0
+    else
+        repo="$(recipe_value "$recipe" REPO)"
+        [ -n "$repo" ] || return 0
+        release_url="${RELEASE_URL:-https://api.github.com/repos/$repo/releases/latest}"
+    fi
     command -v curl >/dev/null 2>&1 || return 0
 
-    release_url="${RELEASE_URL:-https://api.github.com/repos/$repo/releases/latest}"
     metadata_file="$(mktemp)"
     if ! curl -fsSL --max-time 8 "$release_url" -o "$metadata_file" 2>/dev/null; then
         rm -f "$metadata_file"
@@ -117,9 +164,8 @@ latest_version() {
 
 package_status() {
     local recipe="$1"
-    local install_dir current_tag latest_tag
-    install_dir="$(recipe_value "$recipe" INSTALL_DIR)"
-    current_tag="$(current_version "$install_dir")"
+    local current_tag latest_tag
+    current_tag="$(current_version "$recipe")"
     latest_tag="$(latest_version "$recipe")"
 
     if [ -z "$latest_tag" ]; then
@@ -144,14 +190,17 @@ fi
 while true; do
     menu_options=()
     recipe_files=()
+    manager_version="v0.0.0"
+    [ -f "$BASE_DIR/version.txt" ] && manager_version=$(sed -n '1p' "$BASE_DIR/version.txt")
     while IFS= read -r -d '' recipe; do
         filename="$(basename "$recipe")"
         [ "$filename" = "template-port.sh" ] && continue
         title="$(sed -n 's/^# TITLE:[[:space:]]*//p' "$recipe" | head -n 1)"
         [ -n "$title" ] || title="$filename"
+        current_tag="$(current_version "$recipe")"
         status="$(package_status "$recipe")"
         recipe_files+=("$recipe")
-        menu_options+=("$title" "$status")
+        menu_options+=("$title ($current_tag)" "$status")
     done < <(find "$RECIPES_DIR" -maxdepth 1 -type f -name '*.sh' -print0 | sort -z)
 
     if [ "${#menu_options[@]}" -eq 0 ]; then
@@ -159,7 +208,7 @@ while true; do
         exit 1
     fi
 
-    choice=$(whiptail --title "R36S GitHub Package Manager" \
+    choice=$(whiptail --title "R36S GitHub Package Manager ($manager_version)" \
         --menu "Selecione o item para instalar/atualizar:" \
         16 70 8 "${menu_options[@]}" 3>&1 1>&2 2>&3)
     [ $? -eq 0 ] || exit 0
@@ -175,8 +224,7 @@ while true; do
 
     [ -n "$selected_recipe" ] || continue
 
-    install_dir="$(recipe_value "$selected_recipe" INSTALL_DIR)"
-    current_tag="$(current_version "$install_dir")"
+    current_tag="$(current_version "$selected_recipe")"
     latest_tag="$(latest_version "$selected_recipe")"
     [ -n "$latest_tag" ] || latest_tag="indisponível"
     if [ "$current_tag" = "não instalado" ]; then

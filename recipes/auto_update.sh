@@ -1,6 +1,7 @@
 #!/bin/bash
 # TITLE: Auto-atualizar R36S Package Manager
 # AUTHOR: R36S Package Manager
+# AUTO_UPDATE: true
 
 set -euo pipefail
 

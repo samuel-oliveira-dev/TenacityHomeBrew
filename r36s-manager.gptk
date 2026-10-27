@@ -1,0 +1,20 @@
+# R36S GitHub Package Manager
+# gptokeyb v1: gamepad button = keyboard key
+
+up = up
+down = down
+left = left
+right = right
+
+a = enter
+b = esc
+start = enter
+back = esc
+
+l1 = ""
+l2 = ""
+r1 = ""
+r2 = ""
+x = ""
+y = ""
+select = ""

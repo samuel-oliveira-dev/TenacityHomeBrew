@@ -178,3 +178,10 @@ echo "Atualizado para a versão $LATEST_TAG com sucesso!"
 * [ ] Implementação de menu de **Rollback** listando os `.zip` salvos na pasta de backups.
 * [ ] Suporte à renderização de READMEs com o utilitário `glow`.
 * [ ] Migração opcional da interface para Python/Pygame (estilo PortMaster moderno).
+# TenacityHomeBrew
+
+No dArkOSRE, instale as ferramentas em `/roms/tools` e os ports em `/roms/ports`.
+
+O launcher `TenacityHomeBrew.sh` deve ficar em `/roms/tools`. Os arquivos internos
+podem ficar no mesmo diretório ou em `/roms/tools/TenacityHomeBrew/`; nesse caso,
+defina `TENACITY_HOMEBREW_DIR` se o diretório tiver outro nome.
