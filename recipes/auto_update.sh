@@ -6,7 +6,7 @@
 set -euo pipefail
 
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MANAGER_RELEASE_URL="${MANAGER_RELEASE_URL:-}"
+MANAGER_RELEASE_URL="https://api.github.com/repos/samuel-oliveira-dev/TenacityHomeBrew/releases/latest"
 ACTION="${1:-update}"
 TEMP_DIR="${TMPDIR:-/tmp}/r36s-manager-self-update"
 
