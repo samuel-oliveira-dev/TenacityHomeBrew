@@ -2,19 +2,43 @@
 
 set -u
 
+if [ "$(id -u)" -ne 0 ] && [ -x /opt/inttools/gptokeyb ]; then
+    exec sudo -- "$0" "$@"
+fi
+
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RECIPES_DIR="$BASE_DIR/recipes"
 MANAGER_RELEASE_URL="${MANAGER_RELEASE_URL:-}"
 DOWNLOAD_RELEASE="$BASE_DIR/download-release.sh"
 GPTOKEYB_BIN="${GPTOKEYB:-}"
+DIALOG_TTY="${DIALOG_TTY:-/dev/tty1}"
+KEYMAP_FILE="$BASE_DIR/r36s-manager.gptk"
+
+[ -e "$DIALOG_TTY" ] || DIALOG_TTY="/dev/tty"
+export TERM="${TERM:-linux}"
 
 if [ -z "$GPTOKEYB_BIN" ] && [ -x /opt/inttools/gptokeyb ]; then
     GPTOKEYB_BIN=/opt/inttools/gptokeyb
 fi
 
+if [ -z "$GPTOKEYB_BIN" ]; then
+    GPTOKEYB_BIN="$(command -v gptokeyb 2>/dev/null || true)"
+fi
+
+if [ -f /opt/inttools/keys.gptk ]; then
+    KEYMAP_FILE=/opt/inttools/keys.gptk
+fi
+
 if [ -x "$GPTOKEYB_BIN" ] && [ "${R36S_GPTOKEYB_ACTIVE:-0}" != "1" ]; then
     export R36S_GPTOKEYB_ACTIVE=1
-    "$GPTOKEYB_BIN" -1 "$(basename "$0")" -hotkey guide -c "$BASE_DIR/r36s-manager.gptk" >/dev/null 2>&1 &
+    if [ -f /opt/inttools/gamecontrollerdb.txt ]; then
+        export SDL_GAMECONTROLLERCONFIG_FILE=/opt/inttools/gamecontrollerdb.txt
+    fi
+    [ -e /dev/uinput ] && chmod 666 /dev/uinput 2>/dev/null || true
+    pkill -f gptokeyb 2>/dev/null || true
+    "$GPTOKEYB_BIN" -1 "$(basename "$0")" \
+        -c "$KEYMAP_FILE" \
+        >>"$BASE_DIR/gptokeyb.log" 2>&1 &
     GPTOKEYB_PID=$!
     trap 'kill "$GPTOKEYB_PID" 2>/dev/null || true' EXIT
 fi
@@ -24,8 +48,8 @@ log() {
 }
 
 show_message() {
-    if command -v whiptail >/dev/null 2>&1; then
-        whiptail --title "R36S Manager" --msgbox "$1" 10 60
+    if command -v dialog >/dev/null 2>&1; then
+        dialog --title "R36S Manager" --msgbox "$1" 10 60 >"$DIALOG_TTY"
     else
         log "$1"
     fi
@@ -41,7 +65,12 @@ sync_manager() {
     mkdir -p "$sync_dir"
 
     EXTENSION=.zip "$DOWNLOAD_RELEASE" "$MANAGER_RELEASE_URL" "$sync_dir" || return 0
-    cp -a "$sync_dir/." "$BASE_DIR/"
+    while IFS= read -r -d '' source_file; do
+        relative_path="${source_file#"$sync_dir/"}"
+        destination_file="$BASE_DIR/$relative_path"
+        mkdir -p "$(dirname "$destination_file")"
+        cp -a "$source_file" "$destination_file"
+    done < <(find "$sync_dir" -type f ! -name '*.version' -print0)
     rm -rf "$sync_dir"
 }
 
@@ -72,7 +101,7 @@ run_recipe_with_progress() {
     worker=$!
     spinner_index=0
     spinner='|/-\\'
-    terminal="/dev/tty"
+    terminal="$DIALOG_TTY"
 
     while kill -0 "$worker" 2>/dev/null; do
         spinner_char="${spinner:spinner_index:1}"
@@ -120,7 +149,22 @@ recipe_version_file() {
 
 current_version() {
     local recipe="$1"
-    local version_file version
+    local version_file version install_file install_dir
+    if ! is_auto_update "$recipe"; then
+        install_file="$(recipe_value "$recipe" INSTALL_FILE)"
+        install_dir="$(recipe_value "$recipe" INSTALL_DIR)"
+        if [ -n "$install_file" ]; then
+            [ -f "$install_file" ] || {
+                printf 'não instalado'
+                return
+            }
+        elif [ -n "$install_dir" ]; then
+            [ -f "$install_dir/version.txt" ] || {
+                printf 'não instalado'
+                return
+            }
+        fi
+    fi
     version_file="$(recipe_version_file "$recipe")"
     if [ -f "$version_file" ]; then
         version="$(sed -n '1p' "$version_file")"
@@ -182,8 +226,8 @@ package_status() {
 sync_manager
 mkdir -p "$RECIPES_DIR"
 
-if ! command -v whiptail >/dev/null 2>&1; then
-    show_message "Dependência ausente: whiptail."
+if ! command -v dialog >/dev/null 2>&1; then
+    show_message "Dependência ausente: dialog."
     exit 1
 fi
 
@@ -208,9 +252,11 @@ while true; do
         exit 1
     fi
 
-    choice=$(whiptail --title "R36S GitHub Package Manager ($manager_version)" \
+    choice=$(dialog --backtitle "R36S GitHub Package Manager ($manager_version)" \
+        --title "Pacotes disponíveis" \
+        --ok-label "Selecionar" --cancel-label "Sair" \
         --menu "Selecione o item para instalar/atualizar:" \
-        16 70 8 "${menu_options[@]}" 3>&1 1>&2 2>&3)
+        16 80 8 "${menu_options[@]}" 2>&1 >"$DIALOG_TTY")
     [ $? -eq 0 ] || exit 0
 
     selected_recipe=""
@@ -235,29 +281,32 @@ while true; do
         primary_label="Atualizar | atual: $current_tag | latest: $latest_tag"
     fi
 
-    action=$(whiptail --title "$choice" \
+    action=$(dialog --backtitle "R36S GitHub Package Manager ($manager_version)" \
+        --title "$choice" \
+        --ok-label "Selecionar" --cancel-label "Voltar" \
         --menu "Selecione a ação:" \
         16 80 6 \
         "$primary_action" "$primary_label" \
         "remove" "Remover pacote | atual: $current_tag" \
         "backups" "Listar backups" \
-        3>&1 1>&2 2>&3)
+        2>&1 >"$DIALOG_TTY")
     [ $? -eq 0 ] || continue
 
     if [ "$action" = "backups" ]; then
         if output=$(run_recipe_with_progress "$selected_recipe" "$action" 2>&1); then
-            whiptail --title "Backups - $choice" --msgbox "$output" 16 80
+            dialog --backtitle "R36S GitHub Package Manager ($manager_version)" \
+                --title "Backups - $choice" --msgbox "$output" 16 80 >"$DIALOG_TTY"
         else
-            whiptail --title "Erro" --msgbox "$output" 14 70
+            dialog --title "Erro" --msgbox "$output" 14 70 >"$DIALOG_TTY"
         fi
         continue
     fi
 
-    if whiptail --title "Confirmação" --yesno "Deseja executar:\n\n$action em $choice?" 10 60; then
+    if dialog --title "Confirmação" --yesno "Deseja executar:\n\n$action em $choice?" 10 60 >"$DIALOG_TTY"; then
         if output=$(run_recipe_with_progress "$selected_recipe" "$action" 2>&1); then
-            whiptail --title "Sucesso" --msgbox "$output" 12 70
+            dialog --title "Sucesso" --msgbox "$output" 12 70 >"$DIALOG_TTY"
         else
-            whiptail --title "Erro" --msgbox "$output" 14 70
+            dialog --title "Erro" --msgbox "$output" 14 70 >"$DIALOG_TTY"
         fi
     fi
 done

@@ -7,6 +7,7 @@ set -euo pipefail
 
 APP_NAME="${APP_NAME:-exemplo_app}"
 INSTALL_DIR="${INSTALL_DIR:-/roms/ports/$APP_NAME}"
+INSTALL_FILE="${INSTALL_FILE-}"
 REPO="${REPO:-usuario/repositorio-do-app}"
 REQUIRED_SPACE_MB="${REQUIRED_SPACE_MB:-30}"
 TEMP_DIR="${TMPDIR:-/tmp}/${APP_NAME}-update"
@@ -32,10 +33,18 @@ require_commands() {
 }
 
 if [ "$ACTION" = "remove" ]; then
-    [ -n "$INSTALL_DIR" ] && [ "$INSTALL_DIR" != "/" ] || die "diretório de instalação inválido"
-    if [ ! -d "$INSTALL_DIR" ]; then
+    if [ -n "$INSTALL_FILE" ]; then
+        [ "$INSTALL_FILE" != "/" ] || die "arquivo de instalação inválido"
+        if [ ! -f "$INSTALL_FILE" ]; then
+            printf 'Item não está instalado.\n'
+        else
+            rm -f "$INSTALL_FILE"
+            printf 'Item removido. Backups preservados em %s.\n' "$BACKUP_DIR"
+        fi
+    elif [ ! -d "$INSTALL_DIR" ]; then
         printf 'Item não está instalado.\n'
     else
+        [ -n "$INSTALL_DIR" ] && [ "$INSTALL_DIR" != "/" ] || die "diretório de instalação inválido"
         find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 ! -name backups -exec rm -rf -- {} +
         printf 'Item removido. Backups preservados em %s.\n' "$BACKUP_DIR"
     fi
@@ -95,7 +104,10 @@ available_space_kb=$(df -Pk "$(dirname "$INSTALL_DIR")" | awk 'NR==2 {print $4}'
 mkdir -p "$BACKUP_DIR"
 timestamp=$(date +%Y%m%d_%H%M%S)
 backup_zip="$BACKUP_DIR/backup_${current_tag}_${timestamp}.zip"
-if [ -d "$INSTALL_DIR" ] && find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 ! -name backups -print -quit | grep -q .; then
+if [ -n "$INSTALL_FILE" ] && [ -f "$INSTALL_FILE" ]; then
+    zip -q -j "$backup_zip" "$INSTALL_FILE" || die "não foi possível criar o backup"
+    printf 'Backup criado: %s\n' "$backup_zip"
+elif [ -d "$INSTALL_DIR" ] && find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 ! -name backups -print -quit | grep -q .; then
     (cd "$INSTALL_DIR" && zip -qr "$backup_zip" . -x 'backups/*' -x 'tmp/*') || die "não foi possível criar o backup"
     printf 'Backup criado: %s\n' "$backup_zip"
 fi
@@ -119,8 +131,16 @@ for relative_path in "${PRESERVE_LIST[@]}"; do
     fi
 done
 
-mkdir -p "$INSTALL_DIR"
-cp -a "$TEMP_DIR/extracted/." "$INSTALL_DIR/"
+if [ -n "$INSTALL_FILE" ]; then
+    source_file="$(find "$TEMP_DIR/extracted" -type f -name "*${EXTENSION}" -print -quit)"
+    [ -n "$source_file" ] || die "nenhum arquivo ${EXTENSION} encontrado na release"
+    mkdir -p "$(dirname "$INSTALL_FILE")"
+    cp -a "$source_file" "$INSTALL_FILE"
+    chmod +x "$INSTALL_FILE"
+else
+    mkdir -p "$INSTALL_DIR"
+    cp -a "$TEMP_DIR/extracted/." "$INSTALL_DIR/"
+fi
 for relative_path in "${PRESERVE_LIST[@]}"; do
     if [ -e "$preserve_dir/$relative_path" ]; then
         rm -rf "$INSTALL_DIR/$relative_path"
@@ -130,7 +150,7 @@ for relative_path in "${PRESERVE_LIST[@]}"; do
 done
 
 printf '%s\n' "$latest_tag" > "$RECIPE_VERSION_FILE"
-if [ "$RECIPE_VERSION_FILE" != "$INSTALL_DIR/version.txt" ]; then
+if [ -z "$INSTALL_FILE" ] && [ "$RECIPE_VERSION_FILE" != "$INSTALL_DIR/version.txt" ]; then
     printf '%s\n' "$latest_tag" > "$INSTALL_DIR/version.txt"
 fi
 printf 'Atualizado para a versão %s com sucesso!\n' "$latest_tag"

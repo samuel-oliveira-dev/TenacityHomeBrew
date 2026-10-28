@@ -50,6 +50,11 @@ fi
 mkdir -p "$TEMP_DIR"
 EXTENSION=.zip "$BASE_DIR/download-release.sh" "$MANAGER_RELEASE_URL" "$TEMP_DIR" || \
     die "falha ao baixar e extrair a release do gerenciador"
-cp -a "$TEMP_DIR/." "$BASE_DIR/"
+while IFS= read -r -d '' source_file; do
+    relative_path="${source_file#"$TEMP_DIR/"}"
+    destination_file="$BASE_DIR/$relative_path"
+    mkdir -p "$(dirname "$destination_file")"
+    cp -a "$source_file" "$destination_file"
+done < <(find "$TEMP_DIR" -type f ! -name '*.version' -print0)
 printf '%s\n' "$latest_tag" > "$BASE_DIR/version.txt"
 printf 'Gerenciador atualizado para a versão %s.\n' "$latest_tag"
